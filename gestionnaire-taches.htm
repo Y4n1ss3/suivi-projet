@@ -479,6 +479,12 @@
   .board { margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; align-items: start; }
   .col { background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px; padding: 10px; min-height: 160px; min-width: 0; }
   .col.over { outline: 2px dashed var(--c); outline-offset: -4px; }
+  .day-zone { display: grid; gap: 8px; border-radius: 10px; }
+  .day-zone-empty { min-height: 44px; }
+  .day-zone.over { outline: 2px dashed var(--accent); outline-offset: -4px; }
+  .day-zone-hint { padding: 10px 2px; }
+  .row[draggable="true"] { cursor: grab; }
+  .row.dragging { opacity: .5; }
   .col h3 { margin: 4px 6px 10px; font-family: var(--font-display); font-size: 16px; display: flex; align-items: center; gap: 8px; }
   .col h3 i { width: 10px; height: 10px; border-radius: 3px; background: var(--c); }
   .col h3 span { color: var(--muted); font-family: var(--font-body); font-weight: 500; font-size: 14px; }
@@ -1875,7 +1881,7 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
     var due = fmtDue(t);
     var opts = STATUSES.map(function (s) { return '<option value="' + s.id + '"' + (s.id === t.status ? " selected" : "") + ">" + esc(s.label) + "</option>"; }).join("");
     var span = t.start && t.due ? fmtShort(t.start) + " → " + fmtShort(t.due) : "";
-    return '<article class="row ' + (isDone(t) ? "done" : "") + (isSel(ctx ? ctx.pid : app.currentId, t.id) ? " picked" : "") + '" data-id="' + t.id + '"' + (ctx ? ' data-pid="' + esc(ctx.pid) + '"' : "") + ' style="--c:var(--s-' + t.status + ')">' +
+    return '<article class="row ' + (isDone(t) ? "done" : "") + (isSel(ctx ? ctx.pid : app.currentId, t.id) ? " picked" : "") + '"' + (ctx && ctx.dayDrag ? ' draggable="true"' : "") + ' data-id="' + t.id + '"' + (ctx ? ' data-pid="' + esc(ctx.pid) + '"' : "") + ' style="--c:var(--s-' + t.status + ')">' +
       selBtn(ctx ? ctx.pid : app.currentId, t.id, "") +
       '<div class="main">' + (ctx && ctx.pname ? '<div class="pj-tag">' + esc(ctx.pname) + "</div>" : "") + '<div class="t-title">' + titleHTML(t) + "</div>" + (t.desc ? '<div class="t-desc">' + esc(t.desc) + "</div>" : "") + tagsHTML(t) + "</div>" +
       '<select class="status-sel" data-act="status" aria-label="État de la tâche">' + opts + "</select>" +
@@ -2435,7 +2441,7 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
     function rows(arr, stamp) {
       return arr.map(function (x) {
         ctxTasks = x.p.tasks;
-        var h = rowHTML(x.t, { pid: x.p.id, pname: all ? (x.p.id === app.currentId ? state.project : x.p.name) || "Sans titre" : "" });
+        var h = rowHTML(x.t, { pid: x.p.id, pname: all ? (x.p.id === app.currentId ? state.project : x.p.name) || "Sans titre" : "", dayDrag: true });
         return h;
       }).join("");
     }
@@ -2455,9 +2461,10 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
     var so = ui.sort, re = ui.reverse; ui.sort = ui.daySort; ui.reverse = ui.dayRev;
     var head = listHeadHTML(); ui.sort = so; ui.reverse = re;
     html += '<div class="list" style="--gtc:' + gtcFor() + '">' + head;
-    html += pend.length ? rows(pend) : '<div class="empty"><strong>Tout est passé en revue</strong>' + (entries.length ? "Chaque tâche a eu une action aujourd'hui. Elles reviendront demain." : "Aucune tâche en cours.") + "</div>";
-    if (done.length) {
-      html += '<div class="group-head" style="--c:var(--accent)"><i></i>Traitées aujourd\'hui <span>' + done.length + "</span></div>" + rows(done);
+    html += '<div class="day-zone" data-day-zone="pend">' + (pend.length ? rows(pend) : '<div class="empty"><strong>Tout est passé en revue</strong>' + (entries.length ? "Chaque tâche a eu une action aujourd'hui. Elles reviendront demain." : "Aucune tâche en cours.") + "</div>") + "</div>";
+    if (entries.length) {
+      html += '<div class="group-head" style="--c:var(--accent)"><i></i>Traitées aujourd\'hui <span>' + done.length + "</span></div>" +
+        '<div class="day-zone' + (done.length ? "" : " day-zone-empty") + '" data-day-zone="done">' + (done.length ? rows(done) : '<p class="hint day-zone-hint">Glissez une tâche ici pour la marquer traitée aujourd\'hui.</p>') + "</div>";
     }
     ctxTasks = null;
     host.innerHTML = html + "</div>"; applyListLayout();
@@ -3126,6 +3133,30 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
     e.preventDefault();
     var t = taskById(dragId); if (t) { t.status = col.getAttribute("data-col"); touch(t); }
     dragId = null; commit();
+  });
+
+  // Glisser-déposer dans Activité du jour (vers/depuis « Traitées aujourd'hui »)
+  var dayDragId = null, dayDragPid = null;
+  $("view").addEventListener("dragstart", function (e) {
+    var row = e.target.closest('.row[draggable="true"]'); if (!row) return;
+    dayDragId = row.getAttribute("data-id"); dayDragPid = row.getAttribute("data-pid") || "";
+    row.classList.add("dragging");
+    try { e.dataTransfer.setData("text/plain", dayDragId); e.dataTransfer.effectAllowed = "move"; } catch (x) {}
+  });
+  $("view").addEventListener("dragend", function () { dayDragId = null; render(); });
+  $("view").addEventListener("dragover", function (e) {
+    var zone = e.target.closest(".day-zone"); if (!zone || !dayDragId) return;
+    e.preventDefault(); zone.classList.add("over");
+  });
+  $("view").addEventListener("dragleave", function (e) {
+    var zone = e.target.closest(".day-zone"); if (zone && !zone.contains(e.relatedTarget)) zone.classList.remove("over");
+  });
+  $("view").addEventListener("drop", function (e) {
+    var zone = e.target.closest(".day-zone"); if (!zone || !dayDragId) return;
+    e.preventDefault();
+    var t = dayDragPid ? taskIn(dayDragPid, dayDragId) : taskById(dayDragId);
+    if (t) { if (zone.getAttribute("data-day-zone") === "done") touch(t); else t.lastAct = 0; }
+    dayDragId = null; commit();
   });
 
   // Déplacer et redimensionner les barres du Gantt
