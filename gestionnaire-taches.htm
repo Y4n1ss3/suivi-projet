@@ -2784,7 +2784,7 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
   function renderComments() {
     var list = currentComments();
     $("cmCount").textContent = list.length ? "(" + list.length + ")" : "";
-    $("cmList").innerHTML = list.length ? list.map(function (c) {
+    $("cmList").innerHTML = list.length ? list.slice().reverse().map(function (c) {
       return '<div class="cm"><div class="cm-h"><b>' + esc(c.author || "Anonyme") + "</b><span>" + esc(fmtStamp(c.date)) +
         '</span><button type="button" class="link-btn" data-cm="' + esc(c.id) + '">Supprimer</button></div><div class="cm-t">' + esc(c.text) + "</div></div>";
     }).join("") : '<p class="hint">Aucun commentaire pour le moment.</p>';
