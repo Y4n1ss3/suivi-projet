@@ -2411,8 +2411,8 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
   function renderDay(host) {
     var all = ui.scope === "all";
     var entries = all ? allEntries() : (syncCurrent(), state.tasks.map(function (t) { return { t: t, p: curProject() }; }));
-    entries = entries.filter(function (x) { return !isDone(x.t) && (!ui.prio || x.t.prio === ui.prio) && (!ui.who || (ui.who === NOWHO ? !x.t.assignee : x.t.assignee === ui.who)); });
-    var pend = entries.filter(function (x) { return !actToday(x.t); });
+    entries = entries.filter(function (x) { return (!isDone(x.t) || actToday(x.t)) && (!ui.prio || x.t.prio === ui.prio) && (!ui.who || (ui.who === NOWHO ? !x.t.assignee : x.t.assignee === ui.who)); });
+    var pend = entries.filter(function (x) { return !isDone(x.t) && !actToday(x.t); });
     var done = entries.filter(function (x) { return actToday(x.t); });
     var D = "9999-99-99";
     function cmp(a, b) {
