@@ -569,12 +569,18 @@
   .cm { background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
   .cm-h { display: flex; gap: 10px; align-items: baseline; font-size: 13.5px; color: var(--muted); }
   .cm-h b { color: var(--ink); }
-  .cm-h .link-btn { margin-left: auto; }
+  .cm-h .link-btn:first-of-type { margin-left: auto; }
   .cm-t { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 3px; }
+  .cm-t ul, .cm-t ol, .cm-edit ul, .cm-edit ol { margin: 4px 0 4px 20px; padding: 0; }
   .cm-new { display: grid; gap: 8px; }
   .cm-new .row2 { display: flex; gap: 8px; align-items: stretch; }
   .cm-new .row2 .field { flex: 1; }
-  .cm-new textarea { min-height: 64px; }
+  .cm-tools { display: flex; gap: 4px; flex-wrap: wrap; }
+  .cm-tools .icon-btn { padding: 6px 10px; min-width: 32px; line-height: 1.1; }
+  .cm-edit { min-height: 64px; cursor: text; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .cm-edit:empty::before { content: attr(data-ph); color: var(--muted); opacity: .75; }
+  .cm-edit:focus { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+  .cm-editing { display: grid; gap: 8px; }
 
   .toast {
     position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translate(-50%, 20px);
@@ -748,7 +754,8 @@
       <h3 id="cmTitle">Commentaires <span id="cmCount"></span></h3>
       <div class="cm-list" id="cmList"></div>
       <div class="cm-new">
-        <textarea class="field" id="cmText" placeholder="Écrire un commentaire (Ctrl + Entrée pour publier)" aria-label="Nouveau commentaire"></textarea>
+        <div class="cm-tools" id="cmTools" role="toolbar" aria-label="Mise en forme du commentaire"></div>
+        <div class="field cm-edit" id="cmText" contenteditable="true" spellcheck="true" role="textbox" aria-multiline="true" aria-label="Nouveau commentaire" data-ph="Écrire un commentaire (Ctrl + Entrée pour publier)"></div>
         <div class="row2">
           <input class="field" id="cmAuthor" maxlength="40" placeholder="Votre nom" aria-label="Votre nom">
           <button class="btn" type="button" id="cmAdd">Publier</button>
@@ -1653,7 +1660,7 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
     if (ui.prio && t.prio !== ui.prio) return false;
     if (!valOk(t)) return false;
     if (q) {
-      var hay = strip([t.title, t.desc, t.assignee, t.tags.join(" "), Object.keys(t.custom).map(function (k) { return t.custom[k]; }).join(" "), t.comments.map(function (c) { return c.text + " " + c.author; }).join(" "), t.files.map(function (f) { return f.name; }).join(" ")].join(" "));
+      var hay = strip([t.title, t.desc, t.assignee, t.tags.join(" "), Object.keys(t.custom).map(function (k) { return t.custom[k]; }).join(" "), t.comments.map(function (c) { return cmPlainText(c) + " " + c.author; }).join(" "), t.files.map(function (f) { return f.name; }).join(" ")].join(" "));
       if (hay.indexOf(q) < 0) return false;
     }
     return true;
@@ -2781,31 +2788,114 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
   var editingId = null, draftComments = [];
   function currentComments() { var t = editingId && taskById(editingId); return t ? t.comments : draftComments; }
 
+  /* Mise en forme des commentaires (gras/italique/souligné/listes) */
+  var CM_TOOLS = [
+    { cmd: "bold", label: "G", title: "Gras" },
+    { cmd: "italic", label: "I", title: "Italique" },
+    { cmd: "underline", label: "S", title: "Souligné" },
+    { cmd: "insertUnorderedList", label: "•", title: "Liste à puces" },
+    { cmd: "insertOrderedList", label: "1.", title: "Liste numérotée" }
+  ];
+  var CM_TOOLS_HTML = CM_TOOLS.map(function (b) {
+    return '<button type="button" class="icon-btn cm-tool" data-cmd="' + b.cmd + '" title="' + b.title + '" aria-label="' + b.title + '">' + b.label + '</button>';
+  }).join("");
+  $("cmTools").innerHTML = CM_TOOLS_HTML;
+  try { document.execCommand("styleWithCSS", false, false); } catch (e) { }
+  document.addEventListener("mousedown", function (e) { if (e.target.closest(".cm-tool")) e.preventDefault(); });
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest(".cm-tool"); if (!b) return;
+    document.execCommand(b.getAttribute("data-cmd"), false, null);
+  });
+
+  var CM_ALLOWED = { B: 1, STRONG: 1, I: 1, EM: 1, U: 1, UL: 1, OL: 1, LI: 1, BR: 1, DIV: 1, P: 1 };
+  var CM_STRIP = { SCRIPT: 1, STYLE: 1, IFRAME: 1, OBJECT: 1, EMBED: 1 };
+  function sanitizeCmHtml(html) {
+    var box = document.createElement("div");
+    box.innerHTML = html;
+    (function clean(node) {
+      var child = node.firstChild;
+      while (child) {
+        var next = child.nextSibling;
+        if (child.nodeType === 1) {
+          var tag = child.tagName;
+          if (CM_STRIP[tag]) { node.removeChild(child); child = next; continue; }
+          clean(child);
+          if (!CM_ALLOWED[tag]) { while (child.firstChild) node.insertBefore(child.firstChild, child); node.removeChild(child); }
+          else { while (child.attributes.length) child.removeAttribute(child.attributes[0].name); }
+        } else if (child.nodeType !== 3) { node.removeChild(child); }
+        child = next;
+      }
+    })(box);
+    return box.innerHTML;
+  }
+  function cmPlainText(c) {
+    if (!c.html) return c.text;
+    var box = document.createElement("div");
+    box.innerHTML = c.text;
+    box.querySelectorAll("br").forEach(function (br) { br.replaceWith("\n"); });
+    box.querySelectorAll("li").forEach(function (li) { li.prepend("- "); li.append("\n"); });
+    box.querySelectorAll("div,p,ul,ol").forEach(function (el) { el.append("\n"); });
+    return box.textContent.replace(/\n{2,}/g, "\n").trim();
+  }
+
+  var editingCommentId = null;
+  function cmBodyHTML(c) { return c.html ? c.text : esc(c.text).replace(/\n/g, "<br>"); }
+
   function renderComments() {
     var list = currentComments();
     $("cmCount").textContent = list.length ? "(" + list.length + ")" : "";
     $("cmList").innerHTML = list.length ? list.slice().reverse().map(function (c) {
+      if (c.id === editingCommentId) {
+        return '<div class="cm cm-editing"><div class="cm-tools">' + CM_TOOLS_HTML + '</div>' +
+          '<div class="field cm-edit" contenteditable="true" spellcheck="true" role="textbox" aria-multiline="true" aria-label="Modifier le commentaire" data-cm-input="' + esc(c.id) + '">' + cmBodyHTML(c) + '</div>' +
+          '<div class="row2"><button type="button" class="btn small" data-cm-cancel="' + esc(c.id) + '">Annuler</button><button type="button" class="btn small primary" data-cm-save="' + esc(c.id) + '">Enregistrer</button></div></div>';
+      }
       return '<div class="cm"><div class="cm-h"><b>' + esc(c.author || "Anonyme") + "</b><span>" + esc(fmtStamp(c.date)) +
-        '</span><button type="button" class="link-btn" data-cm="' + esc(c.id) + '">Supprimer</button></div><div class="cm-t">' + esc(c.text) + "</div></div>";
+        '</span><button type="button" class="link-btn" data-cm-edit="' + esc(c.id) + '">Modifier</button><button type="button" class="link-btn" data-cm="' + esc(c.id) + '">Supprimer</button></div><div class="cm-t">' + cmBodyHTML(c) + "</div></div>";
     }).join("") : '<p class="hint">Aucun commentaire pour le moment.</p>';
+    if (editingCommentId) {
+      var ed = $("cmList").querySelector('[data-cm-input="' + editingCommentId + '"]');
+      if (ed) {
+        ed.focus();
+        var r = document.createRange(); r.selectNodeContents(ed); r.collapse(false);
+        var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      }
+    }
   }
   function addComment() {
-    var text = $("cmText").value.trim(); if (!text) { $("cmText").focus(); return; }
+    var text = $("cmText").textContent.trim(); if (!text) { $("cmText").focus(); return; }
+    var html = sanitizeCmHtml($("cmText").innerHTML);
     var author = $("cmAuthor").value.trim();
     state.author = author;
-    currentComments().push({ id: uid(), author: author, date: Date.now(), text: text });
+    currentComments().push({ id: uid(), author: author, date: Date.now(), text: html, html: true });
     if (editingId) touch(taskById(editingId));
-    $("cmText").value = "";
+    $("cmText").innerHTML = "";
     renderComments();
     if (editingId) commit(); else save();
   }
   $("cmAdd").addEventListener("click", addComment);
   $("cmText").addEventListener("keydown", function (e) { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); addComment(); } });
   $("cmList").addEventListener("click", function (e) {
+    var editBtn = e.target.closest("[data-cm-edit]");
+    if (editBtn) { editingCommentId = editBtn.getAttribute("data-cm-edit"); renderComments(); return; }
+    var cancelBtn = e.target.closest("[data-cm-cancel]");
+    if (cancelBtn) { editingCommentId = null; renderComments(); return; }
+    var saveBtn = e.target.closest("[data-cm-save]");
+    if (saveBtn) {
+      var sid = saveBtn.getAttribute("data-cm-save"), slist = currentComments();
+      var sc = slist.filter(function (c) { return c.id === sid; })[0];
+      var input = $("cmList").querySelector('[data-cm-input="' + sid + '"]');
+      if (sc && input && input.textContent.trim()) { sc.text = sanitizeCmHtml(input.innerHTML); sc.html = true; }
+      editingCommentId = null;
+      renderComments();
+      if (editingId) commit(); else save();
+      return;
+    }
     var b = e.target.closest("[data-cm]"); if (!b) return;
     var id = b.getAttribute("data-cm"), list = currentComments();
     var i = list.findIndex(function (c) { return c.id === id; });
     if (i >= 0) list.splice(i, 1);
+    if (editingCommentId === id) editingCommentId = null;
     renderComments();
     if (editingId) commit();
   });
@@ -3144,7 +3234,7 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
   }
   function commentsToCSV(t) {
     return t.comments.map(function (c) {
-      return (c.author || "Anonyme") + " [" + new Date(c.date).toISOString() + "] " + c.text;
+      return (c.author || "Anonyme") + " [" + new Date(c.date).toISOString() + "] " + cmPlainText(c);
     }).join(" ¦ ");
   }
   function toCSV() {
@@ -3254,7 +3344,9 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
         if (!c || !String(c.text || c.texte || "").trim()) return;
         var d = c.date || c.created;
         d = isNaN(+d) ? Date.parse(d) : +d;
-        out.push({ id: c.id ? String(c.id) : uid(), author: String(c.author || c.auteur || ""), date: isNaN(d) ? Date.now() : d, text: String(c.text || c.texte) });
+        var isHtml = c.html === true;
+        var txt = String(c.text || c.texte);
+        out.push({ id: c.id ? String(c.id) : uid(), author: String(c.author || c.auteur || ""), date: isNaN(d) ? Date.now() : d, text: isHtml ? sanitizeCmHtml(txt) : txt, html: isHtml });
       });
     }
     return out;
