@@ -544,6 +544,7 @@
   .empty { text-align: center; padding: 44px 16px; border: 2px dashed var(--line); border-radius: 14px; color: var(--muted); margin-top: 16px; }
   .empty strong { display: block; color: var(--ink); font-family: var(--font-display); font-size: 20px; margin-bottom: 4px; }
   .foot-note { margin-top: 28px; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 13.5px; }
+  .app-footer { margin-top: 10px; text-align: center; color: var(--muted); font-size: 12.5px; opacity: .8; }
   .link-btn { background: none; border: 0; color: var(--muted); text-decoration: underline; cursor: pointer; padding: 0; font-size: inherit; }
   .link-btn:hover { color: var(--danger); }
   .link-btn.info:hover { color: var(--accent); }
@@ -693,6 +694,7 @@
         <button type="button" data-export="all">Tous les projets, sans les fichiers joints<br><small>JSON léger : les noms des fichiers sont conservés, pas leur contenu</small></button>
         <button type="button" data-export="json">Ce projet, sans les fichiers joints<br><small>JSON léger : les noms des fichiers sont conservés, pas leur contenu</small></button>
         <button type="button" data-export="csv">Ce projet en tableau<br><small>CSV pour Excel ou Sheets</small></button>
+        <button type="button" data-export="auto" id="autoBtn"><b>Sauvegarde automatique</b><br><small id="autoSmall"></small></button>
       </div>
     </details>
     <button class="btn primary" id="addBtn" type="button">Nouvelle tâche</button>
@@ -704,6 +706,7 @@
     <span id="count"></span>
     <span>Les données restent dans ce navigateur (<button class="link-btn info" id="warnBtn" type="button">en savoir plus</button>). Exportez pour les sauvegarder ou les partager. <button class="link-btn" id="clearBtn" type="button">Vider ce projet</button></span>
   </div>
+  <footer class="app-footer">Conçu par Yanisse Fekraoui et Andy Richard · Réalisé avec Claude</footer>
 </div>
 
 <!-- Édition -->
@@ -1590,6 +1593,7 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
     return false;
   }
   function save() {
+    autoDirty = true;
     syncCurrent();
     try {
       localStorage.setItem(KEY2, JSON.stringify({
@@ -3321,6 +3325,7 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
     var b = e.target.closest("[data-export]"); if (!b) return;
     $("exportMenu").open = false;
     var kind = b.getAttribute("data-export");
+    if (kind === "auto") { autoClick(); return; }
     if (kind === "json-files" || kind === "all-files") { exportWithFiles(kind === "all-files"); return; }
     syncCurrent();
     var NOTE = "sans le contenu des fichiers joints (utilisez « Sauvegarde complète » pour les inclure)";
@@ -5096,6 +5101,126 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
     if (e.key === "Escape" && !document.querySelector("dialog[open]") && Object.keys(sel).length) { sel = {}; refreshSel(); }
   });
 
+  /* ---------- Sauvegarde automatique (dossier choisi sur Chrome/Edge, téléchargement sur Firefox) ---------- */
+  var AUTO_KEY = "suivi-projet-auto", AUTO_DL_KEY = "suivi-projet-auto-dl", AUTO_EVERY = 5 * 60 * 1000, AUTO_DL_EVERY = 24 * 60 * 60 * 1000, AUTO_KEEP = 5, AUTO_NEW = 60 * 60 * 1000;
+  var autoDirty = false, autoDir = null, autoBusy = false, autoLast = 0, autoErr = "";
+  var autoFs = typeof window.showDirectoryPicker === "function";
+  function autoOn() { try { return localStorage.getItem(AUTO_KEY) === "1"; } catch (e) { return false; } }
+  function autoSet(on) { try { if (on) localStorage.setItem(AUTO_KEY, "1"); else localStorage.removeItem(AUTO_KEY); } catch (e) { /* ignoré */ } }
+  function autoHandle(put) {   // le dossier choisi est mémorisé dans sa propre base IndexedDB
+    return new Promise(function (resolve, reject) {
+      try {
+        var r = indexedDB.open("suivi-projet-auto", 1);
+        r.onupgradeneeded = function () { r.result.createObjectStore("h"); };
+        r.onerror = function () { reject(r.error); };
+        r.onsuccess = function () {
+          var tx = r.result.transaction("h", put ? "readwrite" : "readonly"), st = tx.objectStore("h"), rq = put ? st.put(put, "dir") : st.get("dir");
+          tx.oncomplete = function () { resolve(rq.result); };
+          tx.onerror = tx.onabort = function () { reject(tx.error); };
+        };
+      } catch (e) { reject(e); }
+    });
+  }
+  async function autoPerm(ask) {
+    if (!autoDir) return false;
+    var o = { mode: "readwrite" };
+    try {
+      if (await autoDir.queryPermission(o) === "granted") return true;
+      if (ask && await autoDir.requestPermission(o) === "granted") return true;
+    } catch (e) { /* refusé */ }
+    return false;
+  }
+  function p2(n) { return n < 10 ? "0" + n : "" + n; }
+  function autoDay(d) { return d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()); }
+  async function autoList() {   // sauvegardes existantes, de la plus ancienne à la plus récente
+    var out = [], m;
+    for await (var e of autoDir.values()) {
+      m = e.kind === "file" && /^suivi-projet-auto-(\d{4})-(\d{2})-(\d{2})(?:-(\d{2})(\d{2}))?\.json$/.exec(e.name);
+      if (m) out.push({ name: e.name, t: new Date(+m[1], +m[2] - 1, +m[3], +m[4] || 0, +m[5] || 0).getTime() });
+    }
+    return out.sort(function (a, b) { return a.t - b.t; });
+  }
+  async function autoRun(force) {
+    if (!autoOn() || autoBusy || (!autoDirty && !force)) return;
+    var now = new Date(), last = 0;
+    if (!autoFs) {
+      try { last = +localStorage.getItem(AUTO_DL_KEY) || 0; } catch (e) { /* ignoré */ }
+      if (!force && now.getTime() - last < AUTO_DL_EVERY) return;
+    } else if (!(await autoPerm(false))) { autoErr = "perm"; autoBtnUpdate(); return; }
+    autoBusy = true; autoDirty = false;
+    try {
+      var text = await jsonWithFiles(true);
+      if (autoFs) {
+        var list = await autoList(), cur = list[list.length - 1];
+        // nouvelle sauvegarde si la dernière a plus d'une heure, sinon on la met à jour : 5 fichiers au maximum
+        var name = cur && now.getTime() - cur.t < AUTO_NEW ? cur.name : "suivi-projet-auto-" + autoDay(now) + "-" + p2(now.getHours()) + p2(now.getMinutes()) + ".json";
+        var fh = await autoDir.getFileHandle(name, { create: true });
+        var w = await fh.createWritable(); await w.write(text); await w.close();
+        try {
+          list = (await autoList()).filter(function (f) { return f.name !== name; });
+          while (list.length > AUTO_KEEP - 1) await autoDir.removeEntry(list.shift().name);
+        } catch (e) { /* ménage facultatif */ }
+      } else {
+        var a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+        a.download = "suivi-projet-auto-" + autoDay(now) + "-" + p2(now.getHours()) + p2(now.getMinutes()) + ".json";
+        document.body.appendChild(a); a.click(); a.remove();
+        try { localStorage.setItem(AUTO_DL_KEY, String(now.getTime())); } catch (e) { /* ignoré */ }
+      }
+      autoLast = now.getTime(); autoErr = "";
+      if (force) toast("Sauvegarde enregistrée" + (autoFs ? " dans « " + autoDir.name + " »" : " (dossier Téléchargements)"));
+    } catch (e) { autoDirty = true; autoErr = "write"; if (force) toast("Sauvegarde automatique impossible"); }
+    autoBusy = false; autoBtnUpdate();
+  }
+  function autoBtnUpdate() {
+    var t = $("autoBtn") && $("autoBtn").querySelector("b"), sm = $("autoSmall");
+    if (!t || !sm) return;
+    if (!autoOn()) {
+      t.textContent = "Sauvegarde automatique : désactivée";
+      sm.textContent = autoFs ? "choisir le dossier de cette page : copie complète (avec fichiers joints), les 5 dernières sont conservées" : "Firefox : téléchargement automatique au plus une fois par jour si modifié";
+      return;
+    }
+    t.textContent = "Sauvegarde automatique : activée";
+    var hh = autoLast ? " · dernière à " + p2(new Date(autoLast).getHours()) + ":" + p2(new Date(autoLast).getMinutes()) : "";
+    if (autoErr === "perm") sm.textContent = "autorisation à renouveler : cliquer ici";
+    else sm.textContent = (autoFs && autoDir ? "dossier « " + autoDir.name + " »" : "dossier Téléchargements") + hh + " · cliquer pour désactiver";
+  }
+  async function autoClick() {
+    if (autoOn()) {
+      if (autoFs && autoErr === "perm") {
+        if (await autoPerm(true)) { autoErr = ""; autoRun(true); } else toast("Autorisation refusée");
+        return;
+      }
+      autoSet(false); autoBtnUpdate(); toast("Sauvegarde automatique désactivée");
+      return;
+    }
+    if (autoFs) {
+      toast("Choisissez le dossier qui contient cette page");
+      try { autoDir = await window.showDirectoryPicker({ mode: "readwrite", id: "suivi-projet" }); await autoHandle(autoDir); }
+      catch (e) { if (!e || e.name !== "AbortError") toast("Ce dossier est refusé par le navigateur (dossier système ?)"); return; }
+    }
+    autoSet(true); autoErr = ""; await autoRun(true); autoBtnUpdate();
+  }
+  $("exportMenu").addEventListener("toggle", autoBtnUpdate);
+  function autoInit() {
+    autoBtnUpdate();
+    setInterval(function () { autoRun(false); }, AUTO_EVERY);
+    document.addEventListener("visibilitychange", function () { if (document.hidden) autoRun(false); });
+    if (!autoOn()) return;
+    autoDirty = true;
+    if (autoFs) {
+      autoHandle().then(function (h) {
+        if (!h) { autoSet(false); autoBtnUpdate(); return; }
+        autoDir = h;
+        return autoPerm(false).then(function (ok) {
+          if (ok) { autoRun(false); return; }
+          autoErr = "perm"; autoBtnUpdate();   // Chrome redemande l'accès à chaque session : le premier clic dans la page le renouvelle
+          document.addEventListener("click", function () { autoPerm(true).then(function (ok2) { if (ok2) { autoErr = ""; autoRun(true); } }); }, { once: true, capture: true });
+        });
+      }, function () {});
+    } else autoRun(false);
+  }
+
   /* ---------- Alerte au démarrage : où sont les données ---------- */
   var WARN_KEY = "suivi-projet-alerte";
   function warnIsOff() { try { return localStorage.getItem(WARN_KEY) === "1"; } catch (e) { return false; } }
@@ -5143,6 +5268,7 @@ t)).default()}catch(e){warn(`JpxImage#getJsModule: ${e}`)}e(n)}static async#E(e,
   $("projectName").value = state.project;
   applyTheme();
   render();
+  autoInit();
   if (!warnIsOff()) setTimeout(openWarn, 350);
 })();
 </script>
